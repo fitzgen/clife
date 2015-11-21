@@ -1,0 +1,205 @@
+use std::fs;
+use std::io;
+use std::path;
+use std::slice;
+use std::sync::atomic;
+
+use rand;
+
+use std::io::BufRead;
+
+use error;
+
+pub type CellState = atomic::AtomicBool;
+
+// #[derive(Clone)]
+pub struct World {
+    width: usize,
+    cells: Vec<Vec<CellState>>,
+}
+
+impl World {
+    pub fn new_empty(width: usize, height: usize) -> World {
+        World {
+            width: width,
+            cells: (0..height)
+                       .map(|_| (0..width).map(|_| atomic::AtomicBool::new(false)).collect())
+                       .collect(),
+        }
+    }
+
+    pub fn new_random(width: usize, height: usize) -> World {
+        World {
+            width: width,
+            cells: (0..height)
+                       .map(|_| {
+                           (0..width)
+                               .map(|_| atomic::AtomicBool::new(rand::random::<bool>()))
+                               .collect()
+                       })
+                       .collect(),
+        }
+    }
+
+    pub fn from_parts(parts: Vec<Vec<bool>>) -> Result<World, error::Error> {
+        let mut width: Option<usize> = None;
+        let mut cells: Vec<Vec<CellState>> = vec![];
+
+        for row in parts {
+            if let Some(w) = width {
+                if w != row.len() {
+                    return Err(error::Error::WorldBadParts);
+                }
+            } else {
+                if row.len() == 0 {
+                    return Err(error::Error::WorldBadParts);
+                }
+                width = Some(row.len());
+            }
+
+            cells.push(row.into_iter().map(atomic::AtomicBool::new).collect());
+        }
+
+        if let Some(w) = width {
+            assert!(cells.len() != 0);
+            Ok(World {
+                width: w,
+                cells: cells,
+            })
+        } else {
+            Err(error::Error::WorldBadParts)
+        }
+    }
+
+    pub fn from_file(file_path: &path::Path) -> Result<World, error::Error> {
+        let file = try!(fs::File::open(file_path));
+
+        let mut parts: Vec<Vec<bool>> = vec![];
+        for line in io::BufReader::new(file).lines() {
+            let line = try!(line);
+            parts.push(try!(line.chars()
+                                .map(|c| {
+                                    match c {
+                                        '_' => Ok(false),
+                                        '#' => Ok(true),
+                                        _ => Err(error::Error::WorldBadParts),
+                                    }
+                                })
+                                .collect()));
+        }
+
+        World::from_parts(parts)
+    }
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.cells.len()
+    }
+
+    fn number_of_live_neighbors(&self, x: usize, y: usize) -> u8 {
+        assert!(x < self.width());
+        assert!(y < self.height());
+
+        let mut count = 0;
+        if x > 0 {
+            if y > 0 {
+                if self.cell_is_alive(x - 1, y - 1) {
+                    count += 1;
+                }
+            }
+            if self.cell_is_alive(x - 1, y) {
+                count += 1;
+            }
+            if y < self.height() - 1 {
+                if self.cell_is_alive(x - 1, y + 1) {
+                    count += 1;
+                }
+            }
+        }
+
+        if y > 0 {
+            if self.cell_is_alive(x, y - 1) {
+                count += 1;
+            }
+        }
+        if y < self.height() - 1 {
+            if self.cell_is_alive(x, y + 1) {
+                count += 1;
+            }
+        }
+
+        if x < self.width() - 1 {
+            if y > 0 {
+                if self.cell_is_alive(x + 1, y - 1) {
+                    count += 1;
+                }
+            }
+            if self.cell_is_alive(x + 1, y) {
+                count += 1;
+            }
+            if y < self.height() - 1 {
+                if self.cell_is_alive(x + 1, y + 1) {
+                    count += 1;
+                }
+            }
+        }
+
+        count
+    }
+
+    fn cell_is_alive(&self, x: usize, y: usize) -> bool {
+        self.cells[y][x].load(atomic::Ordering::SeqCst)
+    }
+
+    pub fn dump(&self) {
+        for row in self.rows() {
+            print!("|");
+            for cell in row.iter() {
+                print!("{}",
+                       if cell.load(atomic::Ordering::SeqCst) {
+                           "#"
+                       } else {
+                           " "
+                       });
+            }
+            print!("|\n");
+        }
+    }
+
+    pub fn become_next_step(&mut self, previous: &World) {
+        assert!(self.width() == previous.width());
+        assert!(self.height() == previous.height());
+
+        for (y, row) in self.rows().enumerate() {
+            for (x, cell) in row.iter().enumerate() {
+                let neighbors = previous.number_of_live_neighbors(x, y);
+                cell.store(match (previous.cell_is_alive(x, y), neighbors) {
+                               (true, 2) | (_, 3) => true,
+                               _ => false,
+                           },
+                           atomic::Ordering::SeqCst);
+            }
+        }
+    }
+}
+
+pub struct RowIter<'a> {
+    iter: slice::Iter<'a, Vec<CellState>>,
+}
+
+impl<'a> Iterator for RowIter<'a> {
+    type Item = &'a [CellState];
+
+    fn next(&mut self) -> Option<&'a [CellState]> {
+        self.iter.next().map(|r| &r[..])
+    }
+}
+
+impl World {
+    pub fn rows<'a>(&'a self) -> RowIter<'a> {
+        RowIter { iter: self.cells.iter() }
+    }
+}
