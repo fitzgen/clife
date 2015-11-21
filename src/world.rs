@@ -1,6 +1,7 @@
 use std::cmp;
 use std::fs;
 use std::io;
+use std::mem;
 use std::path;
 use std::sync::atomic;
 
@@ -11,7 +12,7 @@ use std::io::BufRead;
 
 use error;
 
-pub type CellState = atomic::AtomicBool;
+pub type CellState = bool;
 
 // #[derive(Clone)]
 pub struct World {
@@ -26,7 +27,7 @@ impl World {
             width: width,
             height: height,
             cells: (0..width * height)
-                       .map(|_| atomic::AtomicBool::new(false))
+                       .map(|_| false)
                        .collect(),
         }
     }
@@ -36,7 +37,7 @@ impl World {
             width: width,
             height: height,
             cells: (0..width * height)
-                       .map(|_| atomic::AtomicBool::new(rand::random::<bool>()))
+                       .map(|_| rand::random::<bool>())
                        .collect(),
         }
     }
@@ -59,7 +60,7 @@ impl World {
             }
 
             for c in row {
-                cells.push(atomic::AtomicBool::new(c));
+                cells.push(c);
             }
             height += 1;
         }
@@ -144,7 +145,7 @@ impl World {
     }
 
     fn cell_is_alive(&self, x: i32, y: i32) -> bool {
-        self.cells[(y as usize * self.width as usize) + x as usize].load(atomic::Ordering::SeqCst)
+        self.cells[(y as usize * self.width as usize) + x as usize]
     }
 
     pub fn become_next_step(&mut self, previous: &World) {
@@ -156,14 +157,12 @@ impl World {
             for _ in 0..8 {
                 scope.spawn(|| {
                     for (y, row) in &rows {
-                        for (x, cell) in row.iter().enumerate() {
+                        for (x, cell) in row.iter_mut().enumerate() {
                             let neighbors = previous.number_of_live_neighbors(x as i32, y as i32);
-                            let alive_next = match (previous.cell_is_alive(x as i32, y as i32),
-                                                    neighbors) {
+                            *cell = match (previous.cell_is_alive(x as i32, y as i32), neighbors) {
                                 (true, 2) | (_, 3) => true,
                                 _ => false,
                             };
-                            cell.store(alive_next, atomic::Ordering::SeqCst);
                         }
                     }
                 });
@@ -187,7 +186,8 @@ impl<'a, T> AtomicChunksIter<'a, T> {
         }
     }
 
-    unsafe fn next_internal(&self) -> Option<(usize, &'a [T])> {
+    #[allow(mutable_transmutes)]
+    unsafe fn next_internal(&self) -> Option<(usize, &'a mut [T])> {
         loop {
             let current = self.next.load(atomic::Ordering::SeqCst);
             if current == self.slice.len() {
@@ -196,14 +196,15 @@ impl<'a, T> AtomicChunksIter<'a, T> {
 
             let end = cmp::min(current + self.step, self.slice.len());
             if self.next.compare_and_swap(current, end, atomic::Ordering::SeqCst) == current {
-                return Some((current / self.step, &self.slice[current..end]));
+                return Some((current / self.step,
+                             mem::transmute(&self.slice[current..end])));
             }
         }
     }
 }
 
 impl<'a, 'b, T> Iterator for &'b AtomicChunksIter<'a, T> {
-    type Item = (usize, &'a [T]);
+    type Item = (usize, &'a mut [T]);
     fn next(&mut self) -> Option<Self::Item> {
         unsafe { self.next_internal() }
     }

@@ -1,5 +1,4 @@
 use std::sync;
-use std::sync::atomic;
 use std::sync::mpsc;
 use std::thread;
 use std::time;
@@ -115,7 +114,7 @@ fn draw_world<F, S>(display: &F,
 
     for (i, row) in &world.rows() {
         for (j, cell) in row.iter().enumerate() {
-            if !cell.load(atomic::Ordering::SeqCst) {
+            if !cell {
                 continue;
             }
 
